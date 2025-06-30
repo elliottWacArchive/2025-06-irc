@@ -181,10 +181,35 @@ io.on("connection", (socket) => {
                 return;
             }
 
+            const trimmedContent = content.trim();
+
+            // commande
+            if (trimmedContent.startsWith("/")) {
+                const commandResult = room.processCommand(
+                    socket.userId,
+                    socket.username,
+                    trimmedContent
+                );
+
+                if (commandResult) {
+                    socket.emit("command-result", commandResult);
+
+                    if (commandResult.success && commandResult.newNickname) {
+                        const connectedUsers = room.getConnectedUsers();
+                        io.to(roomId).emit("user-list-updated", {
+                            connectedUsers,
+                        });
+                    }
+
+                    return;
+                }
+            }
+
+            // message normal
             const message = room.addMessage(
                 socket.userId,
                 socket.username,
-                content.trim()
+                trimmedContent
             );
 
             io.to(roomId).emit("new-message", message);

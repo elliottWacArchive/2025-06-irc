@@ -10,6 +10,7 @@ class ChatRoom {
         this.messages = [];
         this.connectedUsers = new Set();
         this.createdAt = new Date();
+        this.userNicknames = new Map();
     }
 
     static create(data) {
@@ -78,11 +79,21 @@ class ChatRoom {
     addUser(userId, username) {
         this.connectedUsers.add(userId);
 
+        if (!this.userNicknames.has(userId)) {
+            this.userNicknames.set(userId, {
+                originalUsername: username,
+                customNickname: null,
+                joinTime: new Date(),
+            });
+        }
+
         this.addSystemMessage(`${username} a rejoint la salle`);
     }
 
     removeUser(userId, username) {
         this.connectedUsers.delete(userId);
+
+        this.userNicknames.delete(userId);
 
         if (username) {
             this.addSystemMessage(`${username} a quitté la salle`);
@@ -90,10 +101,13 @@ class ChatRoom {
     }
 
     addMessage(userId, username, content) {
+        const displayName = this.getUserDisplayName(userId, username);
+
         const message = {
             id: Date.now().toString(),
             userId,
-            username,
+            username: displayName,
+            originalUsername: username,
             content,
             timestamp: new Date(),
             type: "user",
@@ -129,9 +143,17 @@ class ChatRoom {
         for (const userId of this.connectedUsers) {
             const user = User.findById(userId);
             if (user) {
+                const displayName = this.getUserDisplayName(
+                    userId,
+                    user.username
+                );
                 users.push({
                     id: user.id,
-                    username: user.username,
+                    username: displayName,
+                    originalUsername: user.username,
+                    hasCustomNick:
+                        this.userNicknames.has(userId) &&
+                        this.userNicknames.get(userId).customNickname !== null,
                 });
             }
         }
@@ -157,6 +179,125 @@ class ChatRoom {
         const end = this.messages.length - offset;
 
         return this.messages.slice(start, end);
+    }
+
+    // commandes du chat
+    processCommand(userId, originalUsername, content) {
+        const trimmedContent = content.trim();
+
+        if (!trimmedContent.startsWith("/")) {
+            return null;
+        }
+
+        const args = trimmedContent.split(" ");
+        const command = args[0].toLowerCase();
+
+        switch (command) {
+            case "/nick":
+                return this.handleNickCommand(userId, originalUsername, args);
+            case "/help":
+                return this.handleHelpCommand();
+            default:
+                return {
+                    success: false,
+                    message: `Commande inconnue: ${command}. Tapez /help pour voir les commandes disponibles.`,
+                    type: "error",
+                };
+        }
+    }
+
+    handleNickCommand(userId, originalUsername, args) {
+        if (args.length < 2) {
+            return {
+                success: false,
+                message: "Usage: /nick <nouveau_nom>",
+                type: "error",
+            };
+        }
+
+        const newNickname = args[1];
+
+        if (!this.isValidNickname(newNickname)) {
+            return {
+                success: false,
+                message:
+                    "Le nom doit contenir entre 3 et 20 caractères et ne peut contenir que des lettres, chiffres, tirets et underscores",
+                type: "error",
+            };
+        }
+
+        if (this.isNicknameInUse(newNickname, userId)) {
+            return {
+                success: false,
+                message: `Le nom "${newNickname}" est déjà utilisé dans cette salle`,
+                type: "error",
+            };
+        }
+
+        const oldDisplayName = this.getUserDisplayName(
+            userId,
+            originalUsername
+        );
+
+        this.userNicknames.set(userId, {
+            originalUsername,
+            customNickname: newNickname,
+            changedAt: new Date(),
+        });
+
+        this.addSystemMessage(
+            `${oldDisplayName} a changé son nom en ${newNickname}`
+        );
+
+        return {
+            success: true,
+            message: `Votre nom a été changé en "${newNickname}"`,
+            type: "success",
+            newNickname: newNickname,
+        };
+    }
+
+    handleHelpCommand() {
+        const helpText = `
+Commandes disponibles :
+• /nick <nom> : Changer votre nom dans cette salle
+• /help : Afficher cette aide
+        `.trim();
+
+        return {
+            success: true,
+            message: helpText,
+            type: "info",
+        };
+    }
+
+    isValidNickname(nickname) {
+        const validNameRegex = /^[a-zA-Z0-9_-]+$/;
+        return (
+            nickname &&
+            nickname.length >= 3 &&
+            nickname.length <= 20 &&
+            validNameRegex.test(nickname)
+        );
+    }
+
+    isNicknameInUse(nickname, excludeUserId = null) {
+        for (const [userId, userData] of this.userNicknames.entries()) {
+            if (
+                userId !== excludeUserId &&
+                userData.customNickname.toLowerCase() === nickname.toLowerCase()
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    getUserDisplayName(userId, originalUsername) {
+        const userData = this.userNicknames.get(userId);
+        return userData && userData.customNickname
+            ? userData.customNickname
+            : originalUsername;
     }
 }
 
