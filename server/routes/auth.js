@@ -4,22 +4,24 @@ const { authenticateToken } = require("../middleware/auth");
 
 const router = express.Router();
 
-const validatePassword = (password) => {
-    return password && password.length >= 6;
-};
-
 const validateUsername = (username) => {
-    return username && username.length >= 3 && username.length <= 20;
+    const validUsernameRegex = /^[a-zA-Z0-9_-]+$/;
+    return (
+        username &&
+        username.length >= 3 &&
+        username.length <= 20 &&
+        validUsernameRegex.test(username)
+    );
 };
 
 router.post("/register", async (req, res) => {
     try {
-        const { username, password, confirmPassword } = req.body;
+        const { username } = req.body;
 
-        if (!username || !password || !confirmPassword) {
+        if (!username) {
             return res.status(400).json({
                 success: false,
-                message: "Tous les champs sont requis",
+                message: "Le nom d'utilisateur est requis",
             });
         }
 
@@ -27,25 +29,11 @@ router.post("/register", async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message:
-                    "Le nom d'utilisateur doit contenir entre 3 et 20 caractères",
+                    "Le nom d'utilisateur doit contenir entre 3 et 20 caractères et ne peut contenir que des lettres, chiffres, tirets et underscores",
             });
         }
 
-        if (!validatePassword(password)) {
-            return res.status(400).json({
-                success: false,
-                message: "Le mot de passe doit contenir au moins 6 caractères",
-            });
-        }
-
-        if (password !== confirmPassword) {
-            return res.status(400).json({
-                success: false,
-                message: "Les mots de passe ne correspondent pas",
-            });
-        }
-
-        const user = await User.create({ username, password });
+        const user = User.create({ username });
 
         const token = user.generateToken();
 
@@ -76,36 +64,29 @@ router.post("/register", async (req, res) => {
 
 router.post("/login", async (req, res) => {
     try {
-        const { username, password } = req.body;
+        const { username } = req.body;
 
-        // Validation des champs requis
-        if (!username || !password) {
+        if (!username) {
             return res.status(400).json({
                 success: false,
-                message: "Nom d'utilisateur et mot de passe requis",
+                message: "Nom d'utilisateur requis",
             });
         }
 
-        // Rechercher l'utilisateur par nom d'utilisateur
-        const user = User.findByUsername(username);
+        if (!validateUsername(username)) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Le nom d'utilisateur doit contenir entre 3 et 20 caractères et ne peut contenir que des lettres, chiffres, tirets et underscores",
+            });
+        }
+
+        let user = User.findByUsername(username);
 
         if (!user) {
-            return res.status(401).json({
-                success: false,
-                message: "Identifiants invalides",
-            });
+            user = User.create({ username });
         }
 
-        // Vérifier le mot de passe
-        const isValidPassword = await user.comparePassword(password);
-        if (!isValidPassword) {
-            return res.status(401).json({
-                success: false,
-                message: "Identifiants invalides",
-            });
-        }
-
-        // Générer le token JWT
         const token = user.generateToken();
 
         res.json({
@@ -118,6 +99,14 @@ router.post("/login", async (req, res) => {
         });
     } catch (error) {
         console.error("Erreur lors de la connexion:", error);
+
+        if (error.message === "Utilisateur déjà existant") {
+            return res.status(409).json({
+                success: false,
+                message: "Un utilisateur avec ce nom d'utilisateur existe déjà",
+            });
+        }
+
         res.status(500).json({
             success: false,
             message: "Erreur interne du serveur",
@@ -125,7 +114,6 @@ router.post("/login", async (req, res) => {
     }
 });
 
-// Route pour obtenir le profil utilisateur (nécessite l'authentification)
 router.get("/profile", authenticateToken, (req, res) => {
     try {
         const user = User.findById(req.user.id);
@@ -152,7 +140,6 @@ router.get("/profile", authenticateToken, (req, res) => {
     }
 });
 
-// Route pour vérifier la validité du token
 router.post("/verify-token", authenticateToken, (req, res) => {
     res.json({
         success: true,
@@ -163,16 +150,13 @@ router.post("/verify-token", authenticateToken, (req, res) => {
     });
 });
 
-// Route pour se déconnecter (côté client seulement, suppression du token)
 router.post("/logout", authenticateToken, (req, res) => {
-    // Dans une vraie application, vous pourriez maintenir une liste noire des tokens
     res.json({
         success: true,
         message: "Déconnexion réussie",
     });
 });
 
-// Route pour obtenir tous les utilisateurs (pour le chat)
 router.get("/users", authenticateToken, (req, res) => {
     try {
         const users = User.getAllUsers();

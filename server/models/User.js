@@ -1,28 +1,23 @@
-const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const users = [];
 
 class User {
-    constructor(username, password) {
+    constructor(username) {
         this.id = Date.now().toString();
         this.username = username;
-        this.password = password;
         this.createdAt = new Date();
     }
 
-    static async create(userData) {
-        const { username, password } = userData;
+    static create(userData) {
+        const { username } = userData;
 
         const existingUser = users.find((u) => u.username === username);
         if (existingUser) {
             throw new Error("Utilisateur déjà existant");
         }
 
-        const saltRounds = 10;
-        const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-        const user = new User(username, hashedPassword);
+        const user = new User(username);
         users.push(user);
 
         return user;
@@ -34,10 +29,6 @@ class User {
 
     static findById(id) {
         return users.find((u) => u.id === id);
-    }
-
-    async comparePassword(password) {
-        return await bcrypt.compare(password, this.password);
     }
 
     generateToken() {
