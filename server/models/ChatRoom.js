@@ -10,6 +10,7 @@ class ChatRoom {
         this.messages = [];
         this.connectedUsers = new Set();
         this.createdAt = new Date();
+        this.lastActivity = new Date();
         this.userNicknames = new Map();
     }
 
@@ -54,6 +55,7 @@ class ChatRoom {
             connectedUsersCount: room.connectedUsers.size,
             messagesCount: room.messages.length,
             createdAt: room.createdAt,
+            lastActivity: room.lastActivity,
         }));
     }
 
@@ -74,6 +76,57 @@ class ChatRoom {
 
         chatRooms.splice(roomIndex, 1);
         return room;
+    }
+
+    static cleanupInactiveRooms() {
+        const INACTIVITY_TIMEOUT = 5 * 60 * 1000;
+        const now = new Date();
+        const roomsToDelete = [];
+
+        chatRooms.forEach((room) => {
+            const timeSinceLastActivity = now - room.lastActivity;
+            if (timeSinceLastActivity > INACTIVITY_TIMEOUT) {
+                roomsToDelete.push(room);
+            }
+        });
+
+        roomsToDelete.forEach((room) => {
+            console.log(`Auto-suppression de la salle inactive: ${room.name}`);
+
+            room.addSystemMessage(
+                `Cette salle sera supprimée automatiquement pour inactivité`
+            );
+
+            const roomIndex = chatRooms.findIndex((r) => r.id === room.id);
+            if (roomIndex !== -1) {
+                chatRooms.splice(roomIndex, 1);
+            }
+        });
+
+        return roomsToDelete;
+    }
+
+    static startAutoCleanup() {
+        setInterval(() => {
+            ChatRoom.cleanupInactiveRooms();
+        }, 60 * 1000);
+    }
+
+    static getInactiveRooms() {
+        const INACTIVITY_TIMEOUT = 5 * 60 * 1000;
+        const now = new Date();
+
+        return chatRooms
+            .filter((room) => {
+                const timeSinceLastActivity = now - room.lastActivity;
+                return timeSinceLastActivity > INACTIVITY_TIMEOUT;
+            })
+            .map((room) => ({
+                id: room.id,
+                name: room.name,
+                lastActivity: room.lastActivity,
+                minutesInactive: Math.round((now - room.lastActivity) / 60000),
+            }));
     }
 
     addUser(userId, username) {
@@ -114,6 +167,7 @@ class ChatRoom {
         };
 
         this.messages.push(message);
+        this.lastActivity = new Date();
 
         if (this.messages.length > 100) {
             this.messages = this.messages.slice(-100);
@@ -171,6 +225,7 @@ class ChatRoom {
             connectedUsersCount: this.connectedUsers.size,
             messagesCount: this.messages.length,
             createdAt: this.createdAt,
+            lastActivity: this.lastActivity,
         };
     }
 
@@ -197,6 +252,20 @@ class ChatRoom {
                 return this.handleNickCommand(userId, originalUsername, args);
             case "/help":
                 return this.handleHelpCommand();
+            case "/list":
+                return this.handleListCommand(args);
+            case "/create":
+                return this.handleCreateCommand(userId, originalUsername, args);
+            case "/delete":
+                return this.handleDeleteCommand(userId, args);
+            case "/leave":
+                return this.handleLeaveCommand(userId, originalUsername, args);
+            case "/users":
+                return this.handleUsersCommand();
+            case "/msg":
+                return this.handleMsgCommand(userId, originalUsername, args);
+            case "/inactive":
+                return this.handleInactiveCommand();
             default:
                 return {
                     success: false,
@@ -259,9 +328,16 @@ class ChatRoom {
 
     handleHelpCommand() {
         const helpText = `
-Commandes disponibles :
-• /nick <nom> : Changer votre nom dans cette salle
-• /help : Afficher cette aide
+            Commandes disponibles :
+            • /nick <nom> : Changer votre nom dans cette salle
+            • /list [filtre] : Lister les salles disponibles (optionnel: filtrer par nom)
+            • /create <nom> : Créer une nouvelle salle
+            • /delete <nom> : Supprimer une salle (créateur uniquement)
+            • /leave : Quitter la salle actuelle
+            • /users : Lister les utilisateurs dans la salle actuelle
+            • /msg <nom> <message> : Envoyer un message privé
+            • /inactive : Voir les salles inactives (suppression auto après 5min d'inactivité)
+            • /help : Afficher cette aide
         `.trim();
 
         return {
@@ -269,6 +345,244 @@ Commandes disponibles :
             message: helpText,
             type: "info",
         };
+    }
+
+    handleListCommand(args) {
+        const filter =
+            args.length > 1 ? args.slice(1).join(" ").toLowerCase() : "";
+        const allRooms = ChatRoom.getAllRooms();
+
+        let filteredRooms = allRooms;
+        if (filter) {
+            filteredRooms = allRooms.filter((room) =>
+                room.name.toLowerCase().includes(filter)
+            );
+        }
+
+        if (filteredRooms.length === 0) {
+            const message = filter
+                ? `Aucune salle trouvée contenant "${filter}"`
+                : "Aucune salle disponible";
+            return {
+                success: true,
+                message,
+                type: "info",
+            };
+        }
+
+        const roomList = filteredRooms
+            .map(
+                (room) =>
+                    `• ${room.name} (${room.connectedUsersCount} utilisateurs)`
+            )
+            .join("\n");
+
+        const title = filter
+            ? `Salles contenant "${filter}" :`
+            : "Salles disponibles :";
+
+        return {
+            success: true,
+            message: `${title}\n${roomList}`,
+            type: "info",
+        };
+    }
+
+    handleCreateCommand(userId, originalUsername, args) {
+        if (args.length < 2) {
+            return {
+                success: false,
+                message: "Usage: /create <nom_de_la_salle>",
+                type: "error",
+            };
+        }
+
+        const roomName = args[1];
+
+        try {
+            const newRoom = ChatRoom.create({
+                name: roomName,
+                creatorId: userId,
+                creatorUsername: originalUsername,
+            });
+
+            return {
+                success: true,
+                message: `Salle "${roomName}" créée avec succès. ID: ${newRoom.id}`,
+                type: "success",
+                roomCreated: {
+                    id: newRoom.id,
+                    name: newRoom.name,
+                },
+            };
+        } catch (error) {
+            return {
+                success: false,
+                message: error.message,
+                type: "error",
+            };
+        }
+    }
+
+    handleDeleteCommand(userId, args) {
+        if (args.length < 2) {
+            return {
+                success: false,
+                message: "Usage: /delete <nom_de_la_salle>",
+                type: "error",
+            };
+        }
+
+        const roomName = args[1];
+
+        try {
+            const roomToDelete = chatRooms.find(
+                (room) => room.name.toLowerCase() === roomName.toLowerCase()
+            );
+
+            if (!roomToDelete) {
+                return {
+                    success: false,
+                    message: `Salle "${roomName}" non trouvée`,
+                    type: "error",
+                };
+            }
+
+            const deletedRoom = ChatRoom.deleteById(roomToDelete.id, userId);
+
+            return {
+                success: true,
+                message: `Salle "${deletedRoom.name}" supprimée avec succès`,
+                type: "success",
+                roomDeleted: {
+                    id: deletedRoom.id,
+                    name: deletedRoom.name,
+                },
+            };
+        } catch (error) {
+            return {
+                success: false,
+                message: error.message,
+                type: "error",
+            };
+        }
+    }
+
+    handleLeaveCommand(userId, originalUsername, args) {
+        return {
+            success: true,
+            message: "Vous avez quitté la salle",
+            type: "success",
+            leaveRoom: true,
+        };
+    }
+
+    handleUsersCommand() {
+        const users = this.getConnectedUsers();
+
+        if (users.length === 0) {
+            return {
+                success: true,
+                message: "Aucun utilisateur dans cette salle",
+                type: "info",
+            };
+        }
+
+        const userList = users
+            .map((user) => {
+                const indicator = user.hasCustomNick ? "★" : "";
+                return `• ${user.username}${indicator}`;
+            })
+            .join("\n");
+
+        return {
+            success: true,
+            message: `Utilisateurs dans cette salle (${users.length}) :\n${userList}\n\n★ = nom personnalisé`,
+            type: "info",
+        };
+    }
+
+    handleMsgCommand(userId, originalUsername, args) {
+        if (args.length < 3) {
+            return {
+                success: false,
+                message: "Usage: /msg <nom_utilisateur> <message>",
+                type: "error",
+            };
+        }
+
+        const targetUsername = args[1];
+        const message = args.slice(2).join(" ");
+
+        const targetUser = this.findUserByDisplayName(targetUsername);
+
+        if (!targetUser) {
+            return {
+                success: false,
+                message: `Utilisateur "${targetUsername}" non trouvé dans cette salle`,
+                type: "error",
+            };
+        }
+
+        if (targetUser.id === userId) {
+            return {
+                success: false,
+                message:
+                    "Vous ne pouvez pas vous envoyer un message privé à vous-même",
+                type: "error",
+            };
+        }
+
+        const senderDisplayName = this.getUserDisplayName(
+            userId,
+            originalUsername
+        );
+
+        return {
+            success: true,
+            message: `Message privé envoyé à ${targetUsername}`,
+            type: "success",
+            privateMessage: {
+                fromUserId: userId,
+                fromUsername: senderDisplayName,
+                toUserId: targetUser.id,
+                toUsername: targetUsername,
+                content: message,
+            },
+        };
+    }
+
+    handleInactiveCommand() {
+        const inactiveRooms = ChatRoom.getInactiveRooms();
+
+        if (inactiveRooms.length === 0) {
+            return {
+                success: true,
+                message: "Aucune salle inactive trouvée",
+                type: "info",
+            };
+        }
+
+        const roomList = inactiveRooms
+            .map(
+                (room) =>
+                    `• ${room.name} (inactive depuis ${room.minutesInactive} minutes)`
+            )
+            .join("\n");
+
+        return {
+            success: true,
+            message: `Salles inactives (suppression automatique après 5 minutes) :\n${roomList}`,
+            type: "info",
+        };
+    }
+
+    // Méthodes utilitaires pour la gestion des pseudonymes
+    getUserDisplayName(userId, originalUsername) {
+        const userData = this.userNicknames.get(userId);
+        return userData && userData.customNickname
+            ? userData.customNickname
+            : originalUsername;
     }
 
     isValidNickname(nickname) {
@@ -285,6 +599,7 @@ Commandes disponibles :
         for (const [userId, userData] of this.userNicknames.entries()) {
             if (
                 userId !== excludeUserId &&
+                userData.customNickname &&
                 userData.customNickname.toLowerCase() === nickname.toLowerCase()
             ) {
                 return true;
@@ -293,11 +608,28 @@ Commandes disponibles :
         return false;
     }
 
-    getUserDisplayName(userId, originalUsername) {
-        const userData = this.userNicknames.get(userId);
-        return userData && userData.customNickname
-            ? userData.customNickname
-            : originalUsername;
+    findUserByDisplayName(displayName) {
+        const User = require("./User");
+
+        for (const userId of this.connectedUsers) {
+            const user = User.findById(userId);
+            if (user) {
+                const userDisplayName = this.getUserDisplayName(
+                    userId,
+                    user.username
+                );
+                if (
+                    userDisplayName.toLowerCase() === displayName.toLowerCase()
+                ) {
+                    return {
+                        id: user.id,
+                        username: userDisplayName,
+                        originalUsername: user.username,
+                    };
+                }
+            }
+        }
+        return null;
     }
 }
 
@@ -327,6 +659,15 @@ const UserConnections = {
     getConnectedUsers() {
         return Array.from(userConnections.keys());
     },
+
+    getConnectionsForUser(userId) {
+        if (userConnections.has(userId)) {
+            return Array.from(userConnections.get(userId));
+        }
+        return [];
+    },
 };
 
 module.exports = { ChatRoom, UserConnections };
+
+ChatRoom.startAutoCleanup();

@@ -194,11 +194,81 @@ io.on("connection", (socket) => {
                 if (commandResult) {
                     socket.emit("command-result", commandResult);
 
-                    if (commandResult.success && commandResult.newNickname) {
-                        const connectedUsers = room.getConnectedUsers();
-                        io.to(roomId).emit("user-list-updated", {
-                            connectedUsers,
-                        });
+                    // Gestion des cas spéciaux de commandes
+                    if (commandResult.success) {
+                        // Changement de nickname
+                        if (commandResult.newNickname) {
+                            const connectedUsers = room.getConnectedUsers();
+                            io.to(roomId).emit("user-list-updated", {
+                                connectedUsers,
+                            });
+                        }
+
+                        // Rejoindre une autre salle
+                        if (commandResult.joinRoom) {
+                            socket.emit("redirect-to-room", {
+                                roomId: commandResult.joinRoom.id,
+                                roomName: commandResult.joinRoom.name,
+                            });
+                        }
+
+                        // Quitter la salle actuelle
+                        if (commandResult.leaveRoom) {
+                            socket.leave(roomId);
+                            room.removeUser(socket.userId, socket.username);
+                            socket.currentRoomId = null;
+
+                            io.to(roomId).emit("user-left", {
+                                username: socket.username,
+                                userId: socket.userId,
+                                connectedUsers: room.getConnectedUsers(),
+                            });
+
+                            socket.emit("room-left", { roomId });
+                        }
+
+                        // Message privé
+                        if (commandResult.privateMessage) {
+                            const pm = commandResult.privateMessage;
+
+                            // Trouver les connections du destinataire
+                            const targetConnections =
+                                UserConnections.getConnectionsForUser(
+                                    pm.toUserId
+                                );
+
+                            if (
+                                targetConnections &&
+                                targetConnections.length > 0
+                            ) {
+                                // Envoyer le message privé au destinataire
+                                targetConnections.forEach((socketId) => {
+                                    io.to(socketId).emit("private-message", {
+                                        fromUserId: pm.fromUserId,
+                                        fromUsername: pm.fromUsername,
+                                        content: pm.content,
+                                        timestamp: new Date(),
+                                        roomName: room.name,
+                                    });
+                                });
+                            } else {
+                                socket.emit("command-result", {
+                                    success: false,
+                                    message: `${pm.toUsername} n'est pas connecté`,
+                                    type: "error",
+                                });
+                            }
+                        }
+
+                        // Création/suppression de salle - notifier tous les clients
+                        if (
+                            commandResult.roomCreated ||
+                            commandResult.roomDeleted
+                        ) {
+                            io.emit("rooms-updated", {
+                                rooms: ChatRoom.getAllRooms(),
+                            });
+                        }
                     }
 
                     return;
